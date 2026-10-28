@@ -2,3 +2,9 @@
 node_modules/
 .netlify/
 .vercel/
+
+**/.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
