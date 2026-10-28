@@ -1,16 +1,16 @@
 <resources>
-    <color name="ink">#171717</color>
-    <color name="muted">#6E6E73</color>
-    <color name="canvas">#F5F5F7</color>
+    <color name="ink">#111111</color>
+    <color name="muted">#5B5B5B</color>
+    <color name="canvas">#F7F7F7</color>
     <color name="surface">#FFFFFF</color>
     <color name="white">#FFFFFF</color>
-    <color name="blue">#007AFF</color>
-    <color name="blue_pressed">#0062CC</color>
-    <color name="orange">#C55F00</color>
-    <color name="green">#248A3D</color>
-    <color name="hero_muted">#C8D7F5</color>
-    <color name="line">#E5E5EA</color>
-    <color name="blue_soft">#E8F2FF</color>
-    <color name="green_soft">#EAF8EE</color>
-    <color name="orange_soft">#FFF3E3</color>
+    <color name="blue">#276EF1</color>
+    <color name="blue_pressed">#174FC7</color>
+    <color name="orange">#B64C00</color>
+    <color name="green">#087F5B</color>
+    <color name="hero_muted">#BFC6D0</color>
+    <color name="line">#E4E4E4</color>
+    <color name="blue_soft">#E8F0FF</color>
+    <color name="green_soft">#E5F8F0</color>
+    <color name="orange_soft">#FFF0E6</color>
 </resources>

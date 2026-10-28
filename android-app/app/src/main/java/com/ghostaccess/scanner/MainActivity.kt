@@ -5,9 +5,11 @@ import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Process
 import android.provider.Settings
 import android.view.Gravity
@@ -33,12 +35,15 @@ class MainActivity : android.app.Activity() {
     private var appFilter = AppFilter.REVIEW
     private var latestDeviceResult: ScanResult? = null
     private var latestFileResult: FileScanResult? = null
+    private var latestStorageResult: StorageAuditResult? = null
     private var deviceScanInProgress = false
     private var fileScanInProgress = false
+    private var storageScanInProgress = false
     private var waitingForUsageAccess = false
+    private var waitingForAllFilesAccess = false
 
     private enum class Screen { HOME, APPS, FILES }
-    private enum class AppFilter { REVIEW, ALL }
+    private enum class AppFilter { REVIEW, ACCESS, ALL }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +59,11 @@ class MainActivity : android.app.Activity() {
         if (waitingForUsageAccess) {
             waitingForUsageAccess = false
             if (hasUsageAccess()) runDeviceScan() else render()
+        }
+        if (waitingForAllFilesAccess) {
+            waitingForAllFilesAccess = false
+            render()
+            if (hasAllFilesAccess()) runStorageScan()
         }
     }
 
@@ -139,27 +149,27 @@ class MainActivity : android.app.Activity() {
 
     private fun renderHome() {
         val result = latestDeviceResult
-        val score = result?.let { maxOf(55, 100 - minOf(45, it.findings.sumOf { finding -> finding.riskScore * 2 })) }
+        val score = result?.let { maxOf(42, 100 - minOf(58, it.findings.sumOf { finding -> finding.riskScore * 2 })) }
         content.addView(heroCard(score, result).margins(bottom = 16))
-        content.addView(primaryButton(if (deviceScanInProgress) "Checking your device…" else "Run device scan").apply {
+        content.addView(primaryButton(if (deviceScanInProgress) "Inspecting apps…" else "Inspect all apps").apply {
             isEnabled = !deviceScanInProgress
             setOnClickListener { if (hasUsageAccess()) runDeviceScan() else explainUsageAccess() }
         }.margins(bottom = 10))
-        content.addView(outlineButton("Scan documents or a folder") { screen = Screen.FILES; render() }.margins(bottom = 25))
+        content.addView(outlineButton("Check shared files") { screen = Screen.FILES; render() }.margins(bottom = 25))
 
         sectionHeading("Smart advice", "Based on your real device")
         when {
             !hasUsageAccess() -> adviceCard("Permission needed", "Enable Usage Access so GhostAccess can identify apps that have not been used recently but still have sensitive permissions.", "Open settings") { explainUsageAccess() }
             deviceScanInProgress -> infoCard("Checking your device", "Reading Android's installed-app metadata and usage summaries. Nothing leaves your phone.")
-            result == null -> infoCard("Your first check is ready", "Run a device scan to get advice based on your installed apps—not generic examples.")
+            result == null -> infoCard("Your first check is ready", "Inspect every launchable installed app using Android's real permission, installer, target-version, and usage metadata.")
             result.findings.isEmpty() -> {
-                adviceCard("Your permission hygiene looks good", "No unused app with sensitive permissions was found. Keep checking after installing or deleting apps.", "Scan again") { runDeviceScan() }
+                adviceCard("Your permission hygiene looks good", "No signals worth reviewing were found. Keep checking after installing or deleting apps.", "Scan again") { runDeviceScan() }
                 infoCard("A small habit that helps", "Review Camera, Microphone, Location, Contacts, and SMS after you stop using an app.")
             }
             else -> result.findings.take(3).forEach { finding ->
                 adviceCard(
                     finding.appName,
-                    "Unused ${lastUsedText(finding.lastUsed).lowercase()} but can still access ${finding.permissions.distinct().joinToString(", ")}. Review whether it still needs this access.",
+                    finding.signals.firstOrNull()?.detail ?: "Unused ${lastUsedText(finding.lastUsed).lowercase()} but can still access ${finding.permissions.distinct().joinToString(", ")}. Review whether it still needs this access.",
                     "Review app"
                 ) { showFindingDetail(finding) }
             }
@@ -167,7 +177,7 @@ class MainActivity : android.app.Activity() {
 
         sectionHeading("Your controls", "Transparent by design")
         miniFeature("On-device", "No account, cloud upload, tracking, or scan history.")
-        miniFeature("You choose files", "Choose documents or a folder in Android's file picker. GhostAccess cannot browse private app data.")
+        miniFeature("Shared storage only", "Enable Android's all-files access to catalog shared files and scan supported text/config files. Private app data stays sealed.")
     }
 
     private fun heroCard(score: Int?, result: ScanResult?): View = LinearLayout(this).apply {
@@ -196,7 +206,7 @@ class MainActivity : android.app.Activity() {
                         !hasUsageAccess() -> "Android keeps you in control."
                         result == null -> "Run a private on-device scan."
                         result.findings.isEmpty() -> "No stale sensitive access found."
-                        else -> "${result.findings.size} app${plural(result.findings.size)} worth reviewing."
+                        else -> "${result.findings.size} security signal${plural(result.findings.size)} worth reviewing."
                     },
                     15,
                     R.color.hero_muted
@@ -219,22 +229,26 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun renderApps() {
-        content.addView(text("Permission review", 29, R.color.ink, true).margins(top = 10))
-        content.addView(text("Real app data from Android. Tap an app to understand why it appears and review its settings.", 15, R.color.muted).margins(top = 7, bottom = 15))
+        content.addView(text("App checkup", 29, R.color.ink, true).margins(top = 10))
+        content.addView(text("Every launchable app is inspected using real Android metadata. A signal means “review”, not proof an app is harmful.", 15, R.color.muted).margins(top = 7, bottom = 15))
         if (!hasUsageAccess()) {
-            gateCard("Allow Usage Access", "This Android setting lets GhostAccess compare installed apps with their usage history. It does not give access to app content.") { explainUsageAccess() }
+            gateCard("Allow Usage Access", "This Android setting lets GhostAccess compare installed apps with their usage history. It does not expose app content.") { explainUsageAccess() }
             return
         }
         if (latestDeviceResult == null || deviceScanInProgress) {
-            gateCard(if (deviceScanInProgress) "Checking your device" else "No device data yet", if (deviceScanInProgress) "Your private scan is running." else "Run a scan to view the installed apps that hold sensitive permissions.") { runDeviceScan() }
+            gateCard(if (deviceScanInProgress) "Inspecting installed apps" else "No app data yet", if (deviceScanInProgress) "Your private inspection is running." else "Run a scan to inspect every launchable app and surface small signals early.") { runDeviceScan() }
             return
         }
         val result = latestDeviceResult ?: return
         content.addView(statStrip(result).margins(bottom = 16))
         content.addView(filterBar().margins(bottom = 14))
-        val visible = if (appFilter == AppFilter.REVIEW) result.findings else result.permissionApps
+        val visible = when (appFilter) {
+            AppFilter.REVIEW -> result.findings
+            AppFilter.ACCESS -> result.permissionApps
+            AppFilter.ALL -> result.inspectedApps
+        }
         if (visible.isEmpty()) {
-            infoCard("Nothing needs review", "No unused app with sensitive permissions was found in this scan.")
+            infoCard("Nothing needs review", "No installed app matched this filter. GhostAccess still checked the complete list Android exposed.")
         } else {
             visible.forEach { finding -> content.addView(appCard(finding).margins(bottom = 10)) }
         }
@@ -247,19 +261,21 @@ class MainActivity : android.app.Activity() {
             orientation = LinearLayout.HORIZONTAL
             addView(statCard(result.appsExamined.toString(), "Apps checked"))
             addView(statCard(result.appsWithSensitivePermissions.toString(), "Sensitive access").margins(left = 10))
-            addView(statCard(result.findings.size.toString(), "Need review").margins(left = 10))
+            addView(statCard(result.findings.size.toString(), "Signals").margins(left = 10))
         })
     }
 
     private fun filterBar(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
-        addView(filterButton("Review now", appFilter == AppFilter.REVIEW) { appFilter = AppFilter.REVIEW; render() }, LinearLayout.LayoutParams(0, WRAP, 1f))
-        addView(filterButton("All permission apps", appFilter == AppFilter.ALL) { appFilter = AppFilter.ALL; render() }.margins(left = 8), LinearLayout.LayoutParams(0, WRAP, 1f))
+        addView(filterButton("Signals", appFilter == AppFilter.REVIEW) { appFilter = AppFilter.REVIEW; render() }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        addView(filterButton("Access", appFilter == AppFilter.ACCESS) { appFilter = AppFilter.ACCESS; render() }.margins(left = 8), LinearLayout.LayoutParams(0, WRAP, 1f))
+        addView(filterButton("All", appFilter == AppFilter.ALL) { appFilter = AppFilter.ALL; render() }.margins(left = 8), LinearLayout.LayoutParams(0, WRAP, 1f))
     }
 
     private fun renderFiles() {
-        content.addView(text("File privacy check", 29, R.color.ink, true).margins(top = 10))
-        content.addView(text("Choose exactly what GhostAccess may read. It searches supported text documents locally and never shows or stores matching secret values.", 15, R.color.muted).margins(top = 7, bottom = 18))
+        content.addView(text("File checkup", 29, R.color.ink, true).margins(top = 10))
+        content.addView(text("Scan your shared storage or choose a smaller scope. Checks run locally; matched secret values are never shown or saved.", 15, R.color.muted).margins(top = 7, bottom = 18))
+        content.addView(fileActionCard("Scan all shared files", "Catalogs every reachable shared-storage item and checks supported text, code, and config files. Android will ask for special access.", if (storageScanInProgress) "Checking shared files…" else "Enable & scan") { requestAllFilesAndScan() }.margins(bottom = 10))
         content.addView(fileActionCard("Select documents", "Pick individual files such as .env, .json, .pem, .txt, or .yaml.", "Choose files") { chooseFiles() }.margins(bottom = 10))
         content.addView(fileActionCard("Scan a folder", "Give access to one folder only. Up to 250 supported text files are checked.", "Choose folder") { chooseFolder() }.margins(bottom = 20))
         sectionHeading("What GhostAccess detects", "In files you select")
@@ -268,6 +284,9 @@ class MainActivity : android.app.Activity() {
         if (fileScanInProgress) {
             infoCard("Checking your ${latestFileResult?.scope ?: "selection"}", "The scan is running locally on this phone.")
         } else latestFileResult?.let { result -> renderFileResult(result) }
+        if (storageScanInProgress) {
+            infoCard("Inspecting shared storage", "The complete shared-storage walk can take a little while on a full phone. Keep GhostAccess open.")
+        } else latestStorageResult?.let { result -> renderStorageResult(result) }
     }
 
     private fun renderFileResult(result: FileScanResult) {
@@ -283,6 +302,21 @@ class MainActivity : android.app.Activity() {
         }
     }
 
+    private fun renderStorageResult(result: StorageAuditResult) {
+        sectionHeading("Shared-storage result", "Real device scan")
+        val detail = buildString {
+            append("${result.entriesInspected} items cataloged · ${result.contentFilesScanned} compatible files read")
+            if (result.limitedFiles > 0) append(" · ${result.limitedFiles} large files sampled")
+            if (result.unreadableFiles > 0) append(" · ${result.unreadableFiles} unavailable")
+            if (result.restrictedDirectoriesSkipped > 0) append(" · private app folders protected by Android")
+        }
+        infoCard(if (result.findings.isEmpty()) "No supported secret pattern found" else "${result.findings.size} signal${plural(result.findings.size)} to review", detail)
+        result.findings.take(50).forEach { finding ->
+            adviceCard("Review this file", finding, "Run again") { runStorageScan() }
+        }
+        if (result.findings.size > 50) infoCard("More signals found", "Only the first 50 are displayed to keep the report usable. Run the scan again after resolving them.")
+    }
+
     private fun appCard(finding: PermissionFinding): View = card().apply {
         setOnClickListener { showFindingDetail(finding) }
         addView(LinearLayout(this@MainActivity).apply {
@@ -292,18 +326,28 @@ class MainActivity : android.app.Activity() {
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(text(finding.appName, 17, R.color.ink, true))
-                addView(text(if (finding.isStale) "Review recommended · ${lastUsedText(finding.lastUsed)}" else "Recently used · ${lastUsedText(finding.lastUsed)}", 13, R.color.muted).margins(top = 3))
+                addView(text(if (finding.signals.isNotEmpty()) "${finding.signals.size} signal${plural(finding.signals.size)} · ${lastUsedText(finding.lastUsed)}" else if (finding.isStale) "Review recommended · ${lastUsedText(finding.lastUsed)}" else "No flagged signal · ${lastUsedText(finding.lastUsed)}", 13, R.color.muted).margins(top = 3))
             }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { leftMargin = dp(12) })
-            addView(chip(if (finding.isStale) "REVIEW" else "ACTIVE", if (finding.isStale) R.drawable.bg_chip_attention else R.drawable.bg_chip_good, if (finding.isStale) R.color.orange else R.color.green))
+            addView(chip(if (finding.signals.isNotEmpty() || finding.isStale) "REVIEW" else "CHECKED", if (finding.signals.isNotEmpty() || finding.isStale) R.drawable.bg_chip_attention else R.drawable.bg_chip_good, if (finding.signals.isNotEmpty() || finding.isStale) R.color.orange else R.color.green))
         })
-        addView(text(finding.permissions.distinct().joinToString("  ·  "), 14, R.color.ink).margins(top = 14))
+        val summary = finding.signals.firstOrNull()?.title ?: finding.permissions.distinct().joinToString("  ·  ").ifBlank { "No sensitive access detected" }
+        addView(text(summary, 14, R.color.ink).margins(top = 14))
         addView(text("Tap for advice and Android settings  ›", 13, R.color.blue, true).margins(top = 12))
     }
 
     private fun showFindingDetail(finding: PermissionFinding) {
         AlertDialog.Builder(this)
             .setTitle(finding.appName)
-            .setMessage("${if (finding.isStale) "This app has not been used recently" else "This app is still in recent use"}, and Android reports it has access to ${finding.permissions.distinct().joinToString(", ")}.\n\nAdvice: only keep these permissions if they are needed for a feature you actively use. Android Settings is where you can change or remove them.")
+            .setMessage(buildString {
+                append(if (finding.isStale) "This app has not been used recently." else "This app is still in recent use.")
+                if (finding.permissions.isNotEmpty()) append("\n\nGranted sensitive access: ${finding.permissions.distinct().joinToString(", ")}.")
+                if (finding.signals.isNotEmpty()) {
+                    append("\n\nSignals worth checking:")
+                    finding.signals.forEach { append("\n• ${it.title}: ${it.detail}") }
+                }
+                append("\n\nAndroid target: ${finding.targetSdk}. Source: ${finding.installer ?: "not reported"}. ${if (finding.isUserInstalled) "User-installed app." else "Preinstalled/system app."}")
+                append("\n\nA signal is not proof of harm. Only keep access that the features you use genuinely need. Android Settings is where you can change permissions or remove the app.")
+            })
             .setNegativeButton("Close", null)
             .setPositiveButton("Review settings") { _, _ -> openAppSettings(finding.packageName) }
             .show()
@@ -359,6 +403,41 @@ class MainActivity : android.app.Activity() {
         }
     }
 
+    private fun requestAllFilesAndScan() {
+        if (hasAllFilesAccess()) {
+            runStorageScan()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Allow shared-storage check?")
+            .setMessage("Android will open its special “all files” access screen. If you allow it, GhostAccess can catalog your shared files and check supported text, code, and configuration files locally. Android still blocks other apps’ private folders, passwords, and internal data.")
+            .setNegativeButton("Not now", null)
+            .setPositiveButton("Open Android settings") { _, _ ->
+                waitingForAllFilesAccess = true
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
+                } catch (_: Exception) {
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                }
+            }
+            .show()
+    }
+
+    private fun runStorageScan() {
+        if (!hasAllFilesAccess()) { requestAllFilesAndScan(); return }
+        storageScanInProgress = true
+        screen = Screen.FILES
+        render()
+        worker.execute {
+            try {
+                val result = StorageScanner().scanSharedStorage()
+                runOnUiThread { latestStorageResult = result; storageScanInProgress = false; render() }
+            } catch (_: Exception) {
+                runOnUiThread { storageScanInProgress = false; showError("The shared-storage check could not finish. Confirm all-files access, then try again.") }
+            }
+        }
+    }
+
     private fun explainUsageAccess() {
         AlertDialog.Builder(this)
             .setTitle("Allow a real device check?")
@@ -371,7 +450,7 @@ class MainActivity : android.app.Activity() {
     private fun showAbout() {
         AlertDialog.Builder(this)
             .setTitle("What GhostAccess can check")
-            .setMessage("It checks Android-provided installed-app metadata, granted sensitive permissions, and usage summaries. It can scan files and folders you deliberately select.\n\nIt cannot read another app's private files, passwords, screen contents, or API keys stored inside other apps. All results stay on this device.")
+            .setMessage("It checks Android-provided installed-app metadata, granted sensitive permissions, installer source, Android target version, and usage summaries. With Android's special all-files access, it can catalog shared storage and scan compatible text/config files.\n\nIt cannot read another app's private files, passwords, screen contents, running memory, or API keys inside other apps. All results stay on this device.")
             .setPositiveButton("Got it", null)
             .show()
     }
@@ -393,6 +472,8 @@ class MainActivity : android.app.Activity() {
         }
         return mode == AppOpsManager.MODE_ALLOWED
     }
+
+    private fun hasAllFilesAccess(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
 
     private fun updateNav() {
         listOf(homeTab to Screen.HOME, appsTab to Screen.APPS, filesTab to Screen.FILES).forEach { (button, target) ->
@@ -470,13 +551,14 @@ class MainActivity : android.app.Activity() {
 
     private fun button(label: String, primary: Boolean): Button = Button(this).apply {
         text = label; setAllCaps(false); textSize = 15f; minHeight = 0; gravity = Gravity.CENTER
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         setTextColor(if (primary) Color.WHITE else color(R.color.blue))
         setBackgroundResource(if (primary) R.drawable.bg_primary_button else R.drawable.bg_secondary_button)
         layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
     }
 
     private fun text(value: String, size: Int, colorId: Int, bold: Boolean = false): TextView = TextView(this).apply {
-        text = value; textSize = size.toFloat(); setTextColor(color(colorId)); if (bold) setTypeface(typeface, 1); includeFontPadding = false
+        text = value; textSize = size.toFloat(); setTextColor(color(colorId)); typeface = Typeface.create(if (bold) "sans-serif-medium" else "sans-serif", Typeface.NORMAL); includeFontPadding = false
         layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
     }
 
