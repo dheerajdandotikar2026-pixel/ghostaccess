@@ -12,13 +12,15 @@ data class PermissionFinding(
     val appName: String,
     val permissions: List<String>,
     val lastUsed: Long,
-    val riskScore: Int
+    val riskScore: Int,
+    val isStale: Boolean
 )
 
 data class ScanResult(
     val appsExamined: Int,
     val appsWithSensitivePermissions: Int,
-    val findings: List<PermissionFinding>
+    val findings: List<PermissionFinding>,
+    val permissionApps: List<PermissionFinding>
 )
 
 /**
@@ -38,14 +40,12 @@ class DeviceScanner(private val context: Context) {
         val packages = installedPackages()
             .filter { packageManager.getLaunchIntentForPackage(it.packageName) != null }
 
-        var sensitiveAppCount = 0
-        val findings = packages.mapNotNull { packageInfo ->
+        val permissionApps = packages.mapNotNull { packageInfo ->
             val grantedSensitive = grantedSensitivePermissions(packageInfo)
             if (grantedSensitive.isEmpty()) return@mapNotNull null
-            sensitiveAppCount++
 
             val lastUsed = usageByPackage[packageInfo.packageName]?.lastTimeUsed ?: 0L
-            if (lastUsed != 0L && now - lastUsed < STALE_AFTER_MILLIS) return@mapNotNull null
+            val isStale = lastUsed == 0L || now - lastUsed >= STALE_AFTER_MILLIS
 
             PermissionFinding(
                 packageName = packageInfo.packageName,
@@ -54,14 +54,17 @@ class DeviceScanner(private val context: Context) {
                 } ?: packageInfo.packageName,
                 permissions = grantedSensitive.map { readablePermission(it) },
                 lastUsed = lastUsed,
-                riskScore = grantedSensitive.sumOf { permissionWeight(it) }
+                riskScore = grantedSensitive.sumOf { permissionWeight(it) },
+                isStale = isStale
             )
         }.sortedWith(compareByDescending<PermissionFinding> { it.riskScore }.thenBy { it.appName.lowercase() })
+        val findings = permissionApps.filter { it.isStale }
 
         return ScanResult(
             appsExamined = packages.size,
-            appsWithSensitivePermissions = sensitiveAppCount,
-            findings = findings
+            appsWithSensitivePermissions = permissionApps.size,
+            findings = findings,
+            permissionApps = permissionApps
         )
     }
 

@@ -6,7 +6,7 @@ GhostAccess is an Android app that produces findings from the current device—n
 
 - Launchable installed apps with granted sensitive permissions.
 - Apps with those permissions that Android reports as unused for 90 days or longer.
-- Optional user-selected documents for a small set of common exposed-secret patterns. File contents and matched values are never saved or uploaded.
+- Optional user-selected documents or one selected folder for a small set of common exposed-secret patterns. File contents and matched values are never saved or uploaded.
 
 On first launch, Android opens its built-in Usage Access settings. The user must explicitly enable access before an app-permission scan runs. Each result can open Android's app details page, where the user can review permissions or uninstall the app.
 
